@@ -1,0 +1,150 @@
+#!/bin/bash
+
+#depends: openssl sed cryptsetup blkid findfs sort
+
+
+#public commands
+open () {		#sort -u
+	if [ ! -f $conf ]; then 
+		echo "Error opening $POOL: config does not exist"
+	elif [ ! -f $keyfile ]; then
+		echo "Error opening $POOL: keyfile not found"
+	else
+		key=$(openssl $crypto -d -in $keyfile)
+
+		if [[ ${#key} -ne 1960 ]]; then
+			echo "Error opening $POOL: failed to decrypt keyfile"
+		else
+			devices=`sed 's/#.*//g' $conf`
+			for uuid in $devices
+			do
+				DEV=`findfs UUID=$uuid`
+				NAME="$POOL-$uuid"
+				if [ ! -e $DEV ]; then
+					echo "Warning opening $POOL: UUID=$uuid not found"
+				elif [ -e "/dev/mapper/$NAME" ]; then
+					echo "Warning opening $POOL: UUID=$uuid already open"
+				elif [ -e "/dev/disk/by-id/dm-uuid-CRYPT-*-${uuid//-}-*" ]; then
+					echo "Warning opening $POOL: UUID=$uuid already open"
+				else
+					echo -n $key | cryptsetup open -d - $DEV $NAME
+				fi
+			done
+		fi
+	fi
+}
+
+create-config () {
+	if [ ! -f $conf ]; then
+		touch ${conf}
+		echo "Created $POOL"
+		add $@
+	else
+		echo "Error creating ${POOL}: config exists"
+	fi
+}
+
+create-pool () {
+	keygen
+	create-config $@
+}
+
+add () {
+	if [[ ${#key} -ne 1960 ]]; then		# If key uninitilized, initilize
+		key=$(openssl $crypto -d -in $keyfile)
+	fi
+	if [[ ${#key} == 1960 ]]; then
+		for input in "$@"
+		do
+			DEV=$(findfs $input)
+			if [ -e $DEV ]; then
+				if cryptsetup isLuks $DEV; then
+					echo -n $key | cryptsetup luksAddKey $DEV -d -
+					echo $(blockUUID $DEV) \#$DEV >> $conf
+					echo "Added $input"
+				else
+					echo -n $key | cryptsetup luksFormat $DEV -d -
+
+					echo $(blockUUID $DEV) \#$DEV >> $conf
+					echo "Added $input"
+				fi
+			else
+				echo "Could not find $input"
+				blockUUID $DEV
+				echo $DEV
+			fi
+		done
+	fi
+	deduplicate
+}
+
+keygen () {
+	if [ -f $keyfile ]; then
+		echo "Error creating $POOL keyfile: key exists"
+	else
+		key=$(dd bs=512 count=4 if=/dev/urandom)
+		echo -n $key | openssl $crypto -out $keyfile
+		if [ -f $keyfile ]; then
+			echo "Key created!"
+		else
+			echo "Error creating keyfile"
+		fi
+	fi
+}
+
+#private commands
+
+blockUUID () {
+	blkid ${1} | sed 's/.*\ UUID=\"//;s/\".*//'
+}
+
+deduplicate () {
+	tmp=/tmp/${POOL}.uuid
+	cp $conf $tmp
+	sort -u $tmp > $conf
+	rm $tmp
+}
+
+usage () {
+	echo "usage: swimming <pool> <command> [command arguments]"
+	echo
+	echo "commands:"
+	echo "	create-config <devices>"
+	echo "	create-pool <devices>"
+	echo "	open"
+	echo "	add <devices>"
+	echo "	keygen"
+}
+
+
+##MAIN RUN
+
+POOL="${1}"
+COMMAND="${2:-null}"
+
+shift;shift	#Now each parameter $1,2..etc correspond to devices 1,2,3,4
+
+conf="/etc/swimming/${POOL}.uuid"
+keyfile="/etc/swimming/${POOL}.enc"
+crypto="aes-256-cbc"
+
+case "$COMMAND" in
+	open )
+		open
+		;;
+	create-config )
+		create-config $@
+		;;
+	create-pool )
+		create-pool $@
+		;;
+	add )
+		add $@
+		;;
+	keygen )
+		keygen
+		;;
+	* )
+		usage
+		;;
+esac
