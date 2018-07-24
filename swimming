@@ -4,56 +4,57 @@
 
 
 #public commands
-open () {		#sort -u
+open ()
+{
+	local STATE="opening"
 	if [ ! -f $conf ]; then 
-		echo "Error opening $POOL: config does not exist"
+		msg "Error" "config does not exist"
 	elif [ ! -f $keyfile ]; then
-		echo "Error opening $POOL: keyfile not found"
+		msg "Error" "keyfile does not exist"
 	else
-		key=$(openssl $crypto -d -in $keyfile)
-
-		if [[ ${#key} -ne 1960 ]]; then
-			echo "Error opening $POOL: failed to decrypt keyfile"
-		else
-			devices=`sed 's/#.*//g' $conf`
-			for uuid in $devices
-			do
-				DEV=`findfs UUID=$uuid`
-				NAME="$POOL-$uuid"
-				if [ ! -e $DEV ]; then
-					echo "Warning opening $POOL: UUID=$uuid not found"
-				elif [ -e "/dev/mapper/$NAME" ]; then
-					echo "Warning opening $POOL: UUID=$uuid already open"
-				elif [ -e "/dev/disk/by-id/dm-uuid-CRYPT-*-${uuid//-}-*" ]; then
-					echo "Warning opening $POOL: UUID=$uuid already open"
-				else
-					echo -n $key | cryptsetup open -d - $DEV $NAME
-				fi
-			done
-		fi
+		key_initilize
+		devices=`sed 's/#.*//g' $conf`
+		for uuid in $devices
+		do
+			DEV=`findfs UUID=$uuid`
+			NAME="$POOL-$uuid"
+			if [ ! -e $DEV ]; then
+				msg "Warning" "UUID=$uuid does not exist"
+			elif [ -e "/dev/mapper/$NAME" ]; then
+				msg "Warning" "UUID=$uuid is already open"
+			elif [ -e "/dev/disk/by-id/dm-uuid-CRYPT-*-${uuid//-}-*" ]; then
+				msg "Warning" "UUID=$uuid is already open"
+			else
+				echo -n $key | cryptsetup open -d - $DEV $NAME
+			fi
+		done
 	fi
 }
 
-create-config () {
+create_config ()
+{
+	local STATE="creating config"
 	if [ ! -f $conf ]; then
 		touch ${conf}
+		chmod 644 ${conf}
 		echo "Created $POOL"
 		add $@
 	else
-		echo "Error creating ${POOL}: config exists"
+		msg "Error" "config exists"
 	fi
 }
 
-create-pool () {
+create_pool ()
+{
+	local STATE="creating pool"
 	keygen
-	create-config $@
+	create_config $@
 }
 
-add () {
-	if [[ ${#key} -ne 1960 ]]; then		# If key uninitilized, initilize
-		key=$(openssl $crypto -d -in $keyfile)
-	fi
-	if [[ ${#key} == 1960 ]]; then
+add ()
+{
+	local STATE="adding"
+	if key_isInitilized; then		# Only run if inititilized
 		for input in "$@"
 		do
 			DEV=$(findfs $input)
@@ -69,58 +70,92 @@ add () {
 					echo "Added $input"
 				fi
 			else
-				echo "Could not find $input"
-				blockUUID $DEV
-				echo $DEV
+				msg "Warning" "could not find ${DEV}"
 			fi
 		done
 	fi
-	deduplicate
+	config_deduplicate
 }
 
-keygen () {
+keygen ()
+{
+	local STATE="generating key"
 	if [ -f $keyfile ]; then
-		echo "Error creating $POOL keyfile: key exists"
+		msg "Error" "keyfile exists"
 	else
 		key=$(dd bs=512 count=4 if=/dev/urandom)
 		echo -n $key | openssl $crypto -out $keyfile
 		if [ -f $keyfile ]; then
+			chmod 400 $keyfile
 			echo "Key created!"
 		else
-			echo "Error creating keyfile"
+			msg "Error" "keyfile not created"
 		fi
 	fi
 }
 
 #private commands
 
-blockUUID () {
+blockUUID ()
+{
 	blkid ${1} | sed 's/.*\ UUID=\"//;s/\".*//'
 }
 
-deduplicate () {
+config_deduplicate ()
+{
 	tmp=/tmp/${POOL}.uuid
 	cp $conf $tmp
 	sort -u $tmp > $conf
 	rm $tmp
+	msg "Info" "UUIDs deduplicated"
 }
 
-usage () {
+key_isInitilized ()
+{
+	if [[ ${#key} -ne 1960 ]]; then
+		return 1
+	else
+		return 0
+	fi
+}
+
+key_initilize ()
+{
+	if key_isInitilized; then
+		msg "Info" "key already inititilized"
+	else
+		key=$(openssl $crypto -d -in $keyfile)
+		key_isInitilized || msg "Error" "unable to decrypt key"
+	fi
+}
+
+usage ()
+{
 	echo "usage: swimming <pool> <command> [command arguments]"
 	echo
 	echo "commands:"
-	echo "	create-config <devices>"
-	echo "	create-pool <devices>"
+	echo "	create_config <devices>"
+	echo "	create_pool <devices>"
 	echo "	open"
 	echo "	add <devices>"
 	echo "	keygen"
 }
+
+msg ()
+{
+	echo "${1} ${STATE} ${POOL}: ${3}"
+	if [[ ${1} == "Error" ]]; then
+		exit 1
+	fi
+}
+
 
 
 ##MAIN RUN
 
 POOL="${1}"
 COMMAND="${2:-null}"
+STATE="NULL"
 
 shift;shift	#Now each parameter $1,2..etc correspond to devices 1,2,3,4
 
@@ -132,11 +167,11 @@ case "$COMMAND" in
 	open )
 		open
 		;;
-	create-config )
-		create-config $@
+	create_config )
+		create_config $@
 		;;
-	create-pool )
-		create-pool $@
+	create_pool )
+		create_pool $@
 		;;
 	add )
 		add $@
